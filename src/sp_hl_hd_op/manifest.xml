@@ -1,0 +1,29 @@
+<package>
+  <description brief="sp_hl_hd_op">
+
+     sp_hl_hd_op
+
+  </description>
+  <author>jigwan</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/sp_hl_hd_op</url>
+  <depend package="geometry_msgs"/>
+  <depend package="orocos_kdl"/>
+  <depend package="roscpp"/>
+  <depend package="roslib"/>
+  <depend package="tf"/>
+  <depend package="image_transport"/>
+  <depend package="std_msgs"/>
+  <depend package="opencv2"/>
+  <depend package="cv_bridge"/>
+  <depend package="message_filters"/>
+  <depend package="pub_msgs"/>
+
+  <rosdep name="libopenni-dev"/>
+  <rosdep name="libusb-1.0-dev" />
+  <rosdep name="libopenni-nite-dev"/>
+  <rosdep name="libopenni-sensor-primesense-dev"/>
+</package>
+
+

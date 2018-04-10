@@ -1,0 +1,363 @@
+import numpy as np
+from operator import itemgetter, attrgetter
+from scipy.stats import multivariate_normal
+import math
+
+# !/usr/bin/env python
+# GM-PHD implementation  in Python by Dan Stowell modified by Tommaso Fabbri
+#
+# Based on the description in Vo and Ma (2006).
+# (c) 2012 Dan Stowell and Queen Mary University of London.
+# (c) 2016 Tommaso Fabbri and University of Pisa - Automation & Robotics Laboratory
+
+# All rights reserved.
+#
+# NOTE: SPAWNING IS NOT IMPLEMENTED.
+
+"""
+
+This file is part of gmphd, GM-PHD filter in python by Dan Stowell.
+
+    gmphd is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    gmphd is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with gmphd.  If not, see <http://www.gnu.org/licenses/>.
+"""
+
+
+class GmphdComponent(object):
+    """
+    GM-PHD Gaussian component.
+
+    The Gaussian component is defined by:
+        weight
+        mean
+        covariance
+        id
+        detect
+    """
+    weight = 0
+    mean = None
+    cov = None
+    uid = 5
+    detect = False
+
+    
+    
+
+    def __init__(self, weight, mean, cov, newid, detect=False):
+
+        self.weight = np.float64(weight)
+        self.mean = np.array(mean, dtype=np.float64)
+        self.mean[2:] = 0
+        self.cov = np.array(cov, dtype=np.float64)
+        self.id = newid
+        self.detect = detect
+
+        #print self.mean.size
+
+        # self.mean.resize((self.mean.size, 1))
+        # self.cov.resize((self.mean.size, self.mean.size))
+
+    def __repr__(self):
+        str = '\tWeight: {0}\n\tMean: {1}\n\tCovariance: {2}\n\tID: {3}\n\tDetect: {4}\n'.format(self.weight, self.mean, self.cov, self.id, self.detect)
+        return str
+
+class GMPHD(object):
+    def __str__(self):
+
+        for i in self.gm:
+            return i.__str__()
+
+    def __init__(self, birthgmm, survival, detection, f, q, h, r, p0, clutter, merge_thresh, det_thresh=0.3):
+        """
+            'gm' list of GmphdComponent
+
+            'birthgmm' List of GmphdComponent items which makes up the GMM of birth probabilities.
+            'survival' Survival probability.
+            'detection' Detection probability.
+            'f' State transition matrix F.
+            'q' Process noise covariance Q.
+            'h' Observation matrix H.
+            'r' Observation noise covariance R.
+            'clutter' Clutter intensity.
+        """
+        self.birth_w = 0.001        
+        self.gm = []
+        self.birthgmm = birthgmm
+
+        self.survival = np.float64(survival)  # p_{s,k}(x) in paper
+        self.detection = np.float64(detection)  # p_{d,k}(x) in paper
+        
+        self.merge_thresh = np.float64(merge_thresh)
+
+        self.f = np.array(f, dtype=np.float64)  # state transition matrix      (F_k-1 in paper)
+        self.q = np.array(q, dtype=np.float64)  # process noise covariance     (Q_k-1 in paper)
+        self.h = np.array(h, dtype=np.float64)  # observation matrix           (H_k in paper)
+        self.r = np.array(r, dtype=np.float64)  # observation noise covariance (R_k in paper)
+
+        self.clutter = np.float64(clutter)  # clutter intensity (KAU in paper)
+        self.initQ = np.array(p0, dtype=np.float64) # initial value of covariance matrix P_k
+        
+        self.prev_measures =  np.zeros((4,1))
+        self.det1 = det_thresh
+        self.det2 = det_thresh/10
+
+        
+
+
+
+    def predict_existing(self, born_comps):
+        # Prediction for existing targets
+        repr(self.gm)        
+
+        predicted = [GmphdComponent(self.survival * comp.weight,
+                                    np.dot(self.f, comp.mean),
+                                    self.q + np.dot(np.dot(self.f, comp.cov), self.f.T),
+                                    comp.id
+                                    ) for comp in born_comps]
+        return predicted
+
+    def update(self, measures, predicted):
+        # Construction of PHD update components
+        #repr(predicted)
+
+        # The 'predicted' components are kept, with a decay
+        pr_gm = [GmphdComponent(comp.weight * (1.0 - self.detection),
+                                comp.mean, comp.cov, comp.id, detect=False) for comp in predicted]
+                                
+                                
+        eta = [np.dot(self.h, comp.mean) for comp in predicted]
+        #print 'Eta',  eta
+        s = [self.r + np.dot(np.dot(self.h, comp.cov), self.h.T) for comp in predicted]
+        #print '++++S', s
+
+        k = []
+        for index, comp in enumerate(predicted):
+            k.append(np.dot(np.dot(comp.cov, self.h.T), np.linalg.inv(s[index])))
+
+        pkk = []
+        for index, comp in enumerate(predicted):
+            pkk.append(np.dot(np.eye(np.shape(k[index])[0]) - np.dot(k[index], self.h), comp.cov))
+
+        # Update using the measures
+        for i in np.ndindex(measures.shape[1]):
+            z = measures[:2, i]
+            temp_gm = []
+            for j, comp in enumerate(predicted):
+                '''
+                print "===Z", z.squeeze()
+                print 'ETA', eta[j].squeeze()
+                print 'S', s[j]
+                print 'd', np.linalg.norm(z-eta[j])
+                '''                
+                if np.linalg.norm(z-eta[j]) < 0.9:                
+                    mvn = multivariate_normal(eta[j].squeeze(), s[j])
+                    mvn_result = mvn.pdf(z.squeeze())
+                    #print 'mvn', mvn_result         
+                    #print 'weight', comp.weight * mvn_result                                                   
+                    temp_gm.append(GmphdComponent(
+                            #self.detection * comp.weight * mvn_result*5,
+                            comp.weight * mvn_result,                            
+                            comp.mean + np.dot(k[j], z - eta[j]), pkk[j], comp.id))#       comp.cov))
+
+
+            # The Kappa thing (clutter and reweight)
+            weight_sum = np.sum(comp.weight for comp in temp_gm)
+            
+            if weight_sum != 0:
+                weight_factor = 1.0 / (self.clutter + weight_sum)/1.1
+                for comp in temp_gm:
+                    comp.weight *= weight_factor * self.detection
+                pr_gm.extend(temp_gm)
+        '''
+        allid = np.array([comp.id for comp in pr_gm])                       
+        print '--update:', allid
+        allid = np.array([comp.weight for comp in pr_gm])                       
+        print '--update:', allid        
+        '''        
+            #pr_gm.extend(temp_gm)            
+        self.gm = pr_gm
+
+    def run_iteration(self, measures):#, born_components):
+        # Prediction for birthed targets
+        #print('Measures: ')
+        #print(measures)
+        born = self.create_birth(self.prev_measures)
+        #pr_born = self.predict_birth(born_components)
+        # Prediction for existing targets
+        predicted = self.predict_existing(born)
+        print 'Predict: ', len(predicted)
+        #print('Predicted components:'.format(predicted))
+        # Update
+        self.update(measures, predicted)
+        print('Updated components:'.format(self.gm))
+        print len(self.gm)
+        # Prune
+        self.prune()
+        print('Pruning: '.format(self.gm))
+        self.detect()
+        #print 'Detect', len(self.gm_high)
+        print len(self.gm)
+        self.prev_measures = measures
+
+        
+    def prune(self, truncation_thresh=1e-4, max_components=40):
+        temp_sum_0 = np.sum([i.weight for i in self.gm])
+
+        # Truncation step
+        I = filter(lambda comp: comp.weight > truncation_thresh, self.gm)
+        l = 0  # count the number of features/components
+        pruned_gm = []
+        '''
+        allid = np.array([comp.id for comp in I])                       
+        print '--prune:', allid
+        allid = np.array([comp.weight for comp in I])                       
+        print '--prune:', allid   
+        '''        
+        # Merge step
+        while len(I) > 0:
+            l += 1
+            j = np.argmax(i.weight for i in I)
+            L = []
+            indexes = []
+            for index, i in enumerate(I):
+                temp = np.dot((i.mean - I[j].mean).T, np.linalg.inv(i.cov+np.eye(4)*0.00001))
+                mah_dist = np.float64(np.dot(temp, (i.mean - I[j].mean)))
+                mindist = np.linalg.norm(i.mean[:2]-I[j].mean[:2])       
+                #print '==cov', i.cov         
+                #print 'mah_dist', mah_dist
+                #print 'min_dist', mindist
+                if mindist <= self.merge_thresh:                
+                #if mah_dist <= self.merge_thresh:
+                    L.append(i)
+                    indexes.append(index)
+            if len(L):
+                temp_weight = np.sum([i.weight for i in L])
+                temp_mean = (1.0 / temp_weight) * np.sum([i.weight * i.mean for i in L], axis=0)
+
+                '''
+                temp_cov = np.zeros((temp_mean.size, temp_mean.size))
+                for i in L:
+                    #print 'TM', temp_mean
+                    #print i.mean
+                    temp_cov += (i.cov + np.dot((temp_mean - i.mean).T, (temp_mean - i.mean)))
+                '''
+                #imax = np.argmax([i.weight for i in L])
+                temp_cov = I[j].cov #zquang: cov from the highest prob. component
+                #print 'max', L[imax].weight, 'cov', temp_cov
+                temp_id = I[j].id
+                    
+                pruned_gm.append(GmphdComponent(temp_weight, temp_mean, temp_cov, temp_id))
+            I = [i for j, i in enumerate(I) if j not in indexes]
+        pruned_gm.sort(key=attrgetter('weight'))
+        pruned_gm.reverse()
+        pruned_gm = pruned_gm[:max_components]
+        temp_sum_1 = np.sum(i.weight for i in pruned_gm)
+        for i in pruned_gm:
+            i.weight *= temp_sum_0 / temp_sum_1
+            if i.weight > 1.5:
+                i.weight = 1.5
+
+        # tag name
+        '''        
+        allid = np.array([comp.id for comp in pruned_gm])                       
+        print '++tag:', allid
+        allid = np.array([comp.weight for comp in pruned_gm])                       
+        print '++w:', allid 
+        '''        
+        while(len(np.array([comp.id for comp in pruned_gm])) != len(np.unique(np.array([comp.id for comp in pruned_gm])))):
+            allid = np.array([comp.id for comp in pruned_gm])
+            uniqueid = np.unique(allid)
+            for ii, comp in enumerate(pruned_gm):
+                for jj, comp2 in enumerate(pruned_gm):
+                    if ii< jj and comp.id == comp2.id:
+                        allid = np.array([comp.id for comp in pruned_gm])
+                        allw = np.array([comp.weight for comp in pruned_gm])
+                        
+                        #print 'allid', allid
+                        newid = 1
+                        for ind in range(max(allid)+2):
+                            if min(abs(allid - ind)) > 0:
+                                newid = ind
+                                break
+                        #print 'newid', newid, ii, jj
+                        if pruned_gm[ii].weight > pruned_gm[jj].weight:
+                            pruned_gm[jj].id = newid
+                        else:
+                            pruned_gm[ii].id = newid
+                            
+                        break
+                        
+                                
+        '''                
+        allid = np.array([comp.id for comp in pruned_gm])                       
+        print '++merge:', allid
+        allid = np.array([comp.weight for comp in pruned_gm])                       
+        print '++w:', allid  
+        #print self.gm
+        '''                
+        self.gm = pruned_gm
+
+    def detect(self):
+        for i, comp in enumerate(self.gm):
+            if not comp.detect:
+                if comp.weight > self.det1:
+                    self.gm[i].detect = True
+
+            if comp.detect:
+                if comp.weight < self.det2:
+                    self.gm[i].detect = False
+                            
+                            
+    def create_birth(self, measures):
+        #sigma_r = 10/3#2.0/3
+        #R = [[math.pow(2*sigma_r, 2), 0], [0, math.pow(2*sigma_r, 2)]]
+        #sigma_q = 0.25#1e-3    
+        #Q = [[math.pow(sigma_q, 2), 0, 0, 0], [0, math.pow(sigma_q, 2), 0, 0], [0, 0, 5, 0], [0, 0, 0, 5]]   
+
+
+        it = np.nditer(measures.shape[1])
+        born = []
+        if not len(self.gm):
+            self.gm = [GmphdComponent(self.birth_w, measures[:,i], self.initQ, 2) for i in np.ndindex(measures.shape[1])]
+        
+        #print 'GM', self.gm         
+        #print 'measure', measures   
+        for i in np.ndindex(measures.shape[1]):
+            #born.append(GmphdComponent(GMPHD.birth_w, measures[:,i], Q))
+            mindist = 10
+            z = measures[:,i]
+            for j, comp in enumerate(self.gm):
+                #print 'comp', comp
+                if np.linalg.norm(z[:2]-comp.mean[:2]) < mindist:                
+                    mindist = np.linalg.norm(z[:2]-comp.mean[:2])
+            
+            if mindist > 0.6:
+                allid = np.array([comp.id for comp in self.gm])
+                #print 'allid', allid
+                newid = 1
+                for ind in range(max(allid)+4):
+                    if min(abs(allid - ind)-1) > 0:
+                        newid = ind
+                        break
+                #print 'newid', newid
+                #born.append(GmphdComponent(self.birth_w, measures[:,i], self.initQ, newid))       
+                self.gm.append(GmphdComponent(self.birth_w, measures[:,i], self.initQ, newid))
+                #print '----new born', self.gm[-1]
+                                    
+        #self.gm.extend(born)
+                
+        allid = np.array([comp.id for comp in self.gm])
+        #print '++birth', allid
+                
+        return self.gm
+
