@@ -12,7 +12,11 @@ Install
    ```
    docker run -it --rm --runtime=nvidia nvidia/cuda:8.0-devel /bin/bash
    apt-get update
-   apt-get install git
+   apt-get install git vim
+   cd /home
+   git clone https://github.com/pjreddie/darknet
+   cd darknet
+   make
 
    ```
 
